@@ -12,37 +12,58 @@ use tungstenite::{Message, WebSocket};
 
 pub struct Kind {
     pub name: &'static str,
-    binaries: &'static [&'static str],
-    user_data: &'static str,
+    linux_bins: &'static [&'static str],
+    mac_app: &'static str,
+    linux_data: &'static str,
+    mac_data: &'static str,
 }
 
 pub const KINDS: &[Kind] = &[
     Kind {
         name: "chrome",
-        binaries: &["google-chrome-stable", "google-chrome"],
-        user_data: "google-chrome",
+        linux_bins: &["google-chrome-stable", "google-chrome"],
+        mac_app: "Google Chrome.app/Contents/MacOS/Google Chrome",
+        linux_data: "google-chrome",
+        mac_data: "Google/Chrome",
     },
     Kind {
         name: "chromium",
-        binaries: &["chromium", "chromium-browser"],
-        user_data: "chromium",
+        linux_bins: &["chromium", "chromium-browser"],
+        mac_app: "Chromium.app/Contents/MacOS/Chromium",
+        linux_data: "chromium",
+        mac_data: "Chromium",
     },
     Kind {
         name: "helium",
-        binaries: &["helium-browser", "helium"],
-        user_data: "net.imput.helium",
+        linux_bins: &["helium-browser", "helium"],
+        mac_app: "Helium.app/Contents/MacOS/Helium",
+        linux_data: "net.imput.helium",
+        mac_data: "net.imput.helium",
     },
     Kind {
         name: "brave",
-        binaries: &["brave", "brave-browser"],
-        user_data: "BraveSoftware/Brave-Browser",
+        linux_bins: &["brave", "brave-browser"],
+        mac_app: "Brave Browser.app/Contents/MacOS/Brave Browser",
+        linux_data: "BraveSoftware/Brave-Browser",
+        mac_data: "BraveSoftware/Brave-Browser",
     },
     Kind {
         name: "edge",
-        binaries: &["microsoft-edge-stable", "microsoft-edge"],
-        user_data: "microsoft-edge",
+        linux_bins: &["microsoft-edge-stable", "microsoft-edge"],
+        mac_app: "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        linux_data: "microsoft-edge",
+        mac_data: "Microsoft Edge",
+    },
+    Kind {
+        name: "arc",
+        linux_bins: &[],
+        mac_app: "Arc.app/Contents/MacOS/Arc",
+        linux_data: "",
+        mac_data: "Arc/User Data",
     },
 ];
+
+const IS_MAC: bool = cfg!(target_os = "macos");
 
 pub fn kind(name: &str) -> Result<&'static Kind> {
     let n = name.to_lowercase();
@@ -59,16 +80,38 @@ fn which(name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+fn mac_app_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![PathBuf::from("/Applications")];
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join("Applications"));
+    }
+    dirs
+}
+
 impl Kind {
     pub fn binary(&self) -> Result<PathBuf> {
-        self.binaries
+        if IS_MAC
+            && !self.mac_app.is_empty()
+            && let Some(p) = mac_app_dirs()
+                .into_iter()
+                .map(|d| d.join(self.mac_app))
+                .find(|p| p.is_file())
+        {
+            return Ok(p);
+        }
+        self.linux_bins
             .iter()
             .find_map(|b| which(b))
-            .with_context(|| format!("Browser {} not found in PATH", self.name))
+            .with_context(|| format!("Browser {} not found", self.name))
     }
 
     pub fn user_data_dir(&self) -> PathBuf {
-        dirs::config_dir().unwrap_or_default().join(self.user_data)
+        let rel = if IS_MAC {
+            self.mac_data
+        } else {
+            self.linux_data
+        };
+        dirs::config_dir().unwrap_or_default().join(rel)
     }
 }
 
@@ -84,10 +127,6 @@ pub fn resolve(preferred: Option<&str>) -> Result<PathBuf> {
     }
     if let Some(p) = KINDS.iter().find_map(|k| k.binary().ok()) {
         return Ok(p);
-    }
-    let mac = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-    if Path::new(mac).is_file() {
-        return Ok(mac.into());
     }
     bail!(
         "No Chromium-based browser found. Set one with: class config set browser <chrome|helium|brave|...>"

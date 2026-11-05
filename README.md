@@ -8,7 +8,8 @@ Google Classroom from the terminal.
 cargo install --path .
 ```
 
-Requires a Chromium-based browser (Chrome, Chromium, Helium, Brave or Edge).
+Works on Linux and macOS. Requires a Chromium-based browser (Chrome, Chromium, Helium,
+Brave, Edge or Arc on macOS).
 
 ## Log in
 
@@ -16,6 +17,8 @@ Requires a Chromium-based browser (Chrome, Chromium, Helium, Brave or Edge).
 class auth login                 # log in in a browser window
 class auth login --from helium   # reuse an existing browser session
 ```
+
+On macOS, click "Allow" if the keychain asks for access to your browser's Safe Storage.
 
 ## Use
 

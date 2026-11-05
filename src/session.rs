@@ -11,6 +11,9 @@ use std::time::{Duration, Instant};
 
 const LOGIN_URL: &str =
     "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fclassroom.google.com%2F&hl=en";
+#[cfg(target_os = "macos")]
+pub const CHROME_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36";
+#[cfg(not(target_os = "macos"))]
 pub const CHROME_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -288,11 +291,20 @@ fn import_profile(kind: &browser::Kind, dest: &Path) -> Result<()> {
     fs::create_dir_all(dest.join("Default"))?;
     fs::copy(&local_state, dest.join("Local State"))?;
     let mut copied = false;
-    for f in ["Cookies", "Cookies-journal"] {
-        let from = src.join(&profile).join(f);
+    for rel in [
+        "Cookies",
+        "Cookies-journal",
+        "Network/Cookies",
+        "Network/Cookies-journal",
+    ] {
+        let from = src.join(&profile).join(rel);
         if from.is_file() {
-            fs::copy(&from, dest.join("Default").join(f))?;
-            copied |= f == "Cookies";
+            let to = dest.join("Default").join(rel);
+            if let Some(parent) = to.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(&from, &to)?;
+            copied |= !rel.ends_with("-journal");
         }
     }
     if !copied {

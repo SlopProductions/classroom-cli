@@ -19,6 +19,8 @@ const DEFAULT_IGNORES: &[&str] = &[
     "/TASK.md",
     ".git/",
     ".DS_Store",
+    "._*",
+    "__MACOSX/",
     "Thumbs.db",
     "desktop.ini",
     "~$*",
