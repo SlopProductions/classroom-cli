@@ -1,6 +1,7 @@
 use super::tasks::{pick, resolve_ref};
 use crate::Ctx;
 use crate::classroom::MaterialKind;
+use crate::progress::{Spinner, spin};
 use crate::task_md;
 use crate::util::folder_for;
 use crate::web::Web;
@@ -45,8 +46,9 @@ pub fn link(ctx: &Ctx, task: Option<&str>, path: Option<PathBuf>, force: bool) -
         Some(r) => resolve_ref(&web.email, r)?,
         None => pick(&web)?,
     };
-    let course = web.course(&course_id)?;
-    let cw = web.task(&course_id, &cw_id)?;
+    let (course, cw) = spin("Fetching assignment", || -> Result<_> {
+        Ok((web.course(&course_id)?, web.task(&course_id, &cw_id)?))
+    })?;
     let meta = TaskMeta {
         version: 1,
         account: web.email.clone(),
@@ -81,16 +83,20 @@ pub fn run(ctx: &Ctx, args: GetArgs) -> Result<()> {
         Some(r) => resolve_ref(&web.email, r)?,
         None => pick(&web)?,
     };
-    let course = web.course(&course_id)?;
-    let cw = web.task(&course_id, &cw_id)?;
-    let materials = web.materials(&course_id, &cw_id).unwrap_or_else(|e| {
+    let (course, cw, materials, sub) = spin("Fetching assignment", || -> Result<_> {
+        let course = web.course(&course_id)?;
+        let cw = web.task(&course_id, &cw_id)?;
+        let materials = web.materials(&course_id, &cw_id);
+        let sub = web.submission(&course_id, &cw_id).ok();
+        Ok((course, cw, materials, sub))
+    })?;
+    let materials = materials.unwrap_or_else(|e| {
         eprintln!(
-            "{} could not fetch the materials list: {e:#}",
+            "{} could not fetch the list of materials: {e:#}",
             style("Warning:").yellow()
         );
         vec![]
     });
-    let sub = web.submission(&course_id, &cw_id).ok();
 
     let base = match args.dir.clone().or_else(|| ctx.cfg.default_dir()) {
         Some(d) => d,
@@ -159,19 +165,26 @@ pub fn run(ctx: &Ctx, args: GetArgs) -> Result<()> {
     let mut local = HashMap::new();
     if ctx.cfg.download_materials && !args.no_materials {
         let mut used = HashSet::new();
+        let spinner = Spinner::new("Downloading materials");
+        let say = |line: String| {
+            if !args.quiet {
+                spinner.println(line);
+            }
+        };
         for m in &materials {
             let MaterialKind::Drive { id, .. } = &m.kind else {
                 continue;
             };
-            match download_material(&web, id, &root, &mut used, &old_generated) {
+            spinner.set(format!("Downloading {}", m.title));
+            match download_material(&web, id, &root, &mut used, &old_generated, &say) {
                 Ok(Some(g)) => {
-                    info!(args.quiet, "  {} {}", style("✓").green(), g.path);
+                    say(format!("  {} {}", style("✓").green(), g.path));
                     local.insert(id.clone(), g.path.clone());
                     generated.push(g);
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    info!(args.quiet, "  {} {}: {e:#}", style("✗").red(), m.title);
+                    say(format!("  {} {}: {e:#}", style("✗").red(), m.title));
                 }
             }
         }
@@ -267,6 +280,7 @@ fn download_material(
     root: &Path,
     used: &mut HashSet<String>,
     old: &HashMap<String, GeneratedFile>,
+    say: &dyn Fn(String),
 ) -> Result<Option<GeneratedFile>> {
     let meta = web.drive_meta(id)?;
     let Some((name, export)) = target(&meta) else {
@@ -279,10 +293,10 @@ fn download_material(
         && full.is_file()
         && workspace::sha256_file(&full)? != g.sha256
     {
-        eprintln!(
+        say(format!(
             "  {} {rel} — modified by you, not overwriting",
             style("•").yellow()
-        );
+        ));
         return Ok(Some(g.clone()));
     }
     let url = match export {

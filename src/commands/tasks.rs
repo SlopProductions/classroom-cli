@@ -1,6 +1,7 @@
 use crate::Ctx;
 use crate::classroom::{Course, Task, task_link};
 use crate::config;
+use crate::progress::{Spinner, spin};
 use crate::util::{fmt_due, parse_classroom_url, with_authuser};
 use crate::web::Web;
 use crate::workspace;
@@ -24,6 +25,7 @@ pub struct ListOpts<'a> {
 }
 
 pub fn fetch_tasks(web: &Web, opts: &ListOpts) -> Result<Vec<TaskRow>> {
+    let spinner = Spinner::new("Fetching assignments");
     let filter = opts.course.map(|f| deunicode::deunicode(f).to_lowercase());
     let courses: Vec<Course> = web
         .courses()?
@@ -64,6 +66,7 @@ pub fn fetch_tasks(web: &Web, opts: &ListOpts) -> Result<Vec<TaskRow>> {
             .collect()
     });
 
+    drop(spinner);
     let mut rows = vec![];
     for (name, res) in results {
         match res {
@@ -148,7 +151,6 @@ pub fn resolve_ref(email: &str, r: &str) -> Result<(String, String)> {
 }
 
 pub fn pick(web: &Web) -> Result<(String, String)> {
-    eprintln!("Fetching assignments...");
     let rows = fetch_tasks(
         web,
         &ListOpts {
@@ -240,7 +242,7 @@ pub fn courses(ctx: &Ctx) -> Result<()> {
     t.load_preset(presets::NOTHING)
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(["Course", "Section", "ID"].map(|h| Cell::new(h).fg(Color::DarkGrey)));
-    for c in web.courses()? {
+    for c in spin("Fetching courses", || web.courses())? {
         t.add_row(vec![
             Cell::new(&c.name),
             Cell::new(c.section.as_deref().unwrap_or("")),

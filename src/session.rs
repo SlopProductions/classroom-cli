@@ -1,5 +1,6 @@
 use crate::browser::{self, Browser, Cdp, is_closed};
 use crate::config;
+use crate::progress::{Spinner, spin};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -306,10 +307,11 @@ fn import_profile(kind: &browser::Kind, dest: &Path) -> Result<()> {
 
 fn interactive_login(binary: &Path, profile: &Path) -> Result<Vec<Cookie>> {
     let mut b = Browser::launch(binary, profile, LOGIN_URL, false)?;
-    eprintln!("Log in to your school account in the browser window.");
-    eprintln!("Waiting for Classroom to open...");
+    let spinner = Spinner::new("Log in to your school account in the browser window");
     let res = wait_for_login(&mut b.cdp, None);
+    spinner.set("Saving session");
     b.close();
+    drop(spinner);
     match res {
         Ok(Some(c)) => Ok(c),
         Ok(None) => bail!("Login failed"),
@@ -343,8 +345,11 @@ pub fn login(
         let kind = browser::kind(name)?;
         let binary = kind.binary()?;
         import_profile(kind, &tmp)?;
-        eprintln!("Importing Google session from {}...", kind.name);
-        match headless_check(&binary, &tmp)? {
+        let found = spin(
+            format!("Importing Google session from {}", kind.name),
+            || headless_check(&binary, &tmp),
+        )?;
+        match found {
             Some(c) => Ok((binary, c)),
             None => {
                 eprintln!(

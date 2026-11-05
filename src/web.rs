@@ -2,7 +2,8 @@ use crate::session::{self, CHROME_UA, Session};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use reqwest::blocking::{Client, RequestBuilder, Response};
+use indicatif::ProgressBar;
+use reqwest::blocking::{Body, Client, RequestBuilder, Response};
 use reqwest::cookie::Jar;
 use reqwest::header::{CONTENT_TYPE, LOCATION, ORIGIN, REFERER, USER_AGENT};
 use serde_json::{Value, json};
@@ -178,7 +179,7 @@ fn parse_batch(text: &str, rpc: &str) -> Result<Value> {
 }
 
 impl Web {
-    pub fn connect(mut session: Session) -> Result<Self> {
+    pub fn connect(mut session: Session, status: &dyn Fn(&str)) -> Result<Self> {
         let http = build_client(&session)?;
         let boot = match bootstrap(&http, &session.email) {
             Ok(b) => Some(b),
@@ -188,7 +189,7 @@ impl Web {
         let (http, boot) = match boot {
             Some(b) => (http, b),
             None => {
-                eprintln!("Refreshing Google session...");
+                status("Refreshing Google session");
                 session::refresh(&mut session)?;
                 let http = build_client(&session)?;
                 let b = bootstrap(&http, &session.email).map_err(|_| {
@@ -315,7 +316,12 @@ impl Web {
         Ok((resp.bytes()?.to_vec(), ctype))
     }
 
-    pub fn upload(&self, path: &Path, name: &str) -> Result<(String, String)> {
+    pub fn upload(
+        &self,
+        path: &Path,
+        name: &str,
+        progress: &ProgressBar,
+    ) -> Result<(String, String)> {
         let mime = mime_guess::from_path(path)
             .first_or_octet_stream()
             .to_string();
@@ -353,7 +359,8 @@ impl Web {
         if len > 0 {
             put = put.header("content-range", format!("bytes 0-{}/{len}", len - 1));
         }
-        let resp = put.body(std::fs::File::open(path)?).send()?;
+        let reader = progress.wrap_read(std::fs::File::open(path)?);
+        let resp = put.body(Body::sized(reader, len)).send()?;
         let file: Value = check(resp)?.json()?;
         let id = file["id"]
             .as_str()

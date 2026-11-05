@@ -27,6 +27,14 @@ class submit -n       # preview what will be sent
 class submit          # upload and turn in
 ```
 
+Clean up old assignments by marking them as done (no attachments):
+
+```sh
+class done 5                     # one assignment
+class done --older-than 90 -n    # preview everything older than 90 days
+class done --older-than 90       # mark them all
+```
+
 Already have a folder? Link it first:
 
 ```sh

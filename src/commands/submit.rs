@@ -1,5 +1,6 @@
 use crate::Ctx;
 use crate::classroom::State;
+use crate::progress::{self, Spinner, spin};
 use crate::util::{confirm, fmt_due_long, human_size};
 use crate::workspace::{self, Collected, SubmissionRecord};
 use anyhow::{Result, bail};
@@ -100,7 +101,7 @@ pub fn submit(ctx: &Ctx, args: SubmitArgs) -> Result<()> {
 
     let web = ctx.web_for(Some(&meta.account))?;
     let (course, task) = (meta.course_id.clone(), meta.course_work_id.clone());
-    let sub = web.submission(&course, &task)?;
+    let sub = spin("Checking assignment", || web.submission(&course, &task))?;
     let resubmit = sub.state.is_done();
     if resubmit {
         println!(
@@ -143,22 +144,21 @@ pub fn submit(ctx: &Ctx, args: SubmitArgs) -> Result<()> {
         Some(rel) => root.join(rel),
         None => {
             let out = tmp.path().join(&p.name);
-            workspace::make_zip(&root, &col.include, &out)?;
+            spin("Zipping files", || {
+                workspace::make_zip(&root, &col.include, &out)
+            })?;
             out
         }
     };
     let size = std::fs::metadata(&upload_path)?.len();
 
     if resubmit {
-        eprintln!("Unsubmitting...");
-        web.reclaim(&course, &task)?;
+        spin("Unsubmitting", || web.reclaim(&course, &task))?;
     }
-    eprintln!(
-        "Uploading {} ({}) to Google Drive...",
-        p.name,
-        human_size(size)
-    );
-    let (file_id, mime) = web.upload(&upload_path, &p.name)?;
+    let bar = progress::bytes(format!("Uploading {}", p.name), size);
+    let uploaded = web.upload(&upload_path, &p.name, &bar);
+    bar.finish_and_clear();
+    let (file_id, mime) = uploaded?;
     let mut record = SubmissionRecord {
         at: chrono::Local::now().to_rfc3339(),
         file_name: p.name.clone(),
@@ -168,12 +168,12 @@ pub fn submit(ctx: &Ctx, args: SubmitArgs) -> Result<()> {
         turned_in: false,
     };
 
+    let spinner = Spinner::new("Attaching to the assignment");
     let result = (|| -> Result<()> {
-        eprintln!("Attaching to the assignment...");
         web.attach_drive_file(&course, &task, &file_id, &mime)?;
         record.attached = true;
         if !args.no_turn_in {
-            eprintln!("Turning in...");
+            spinner.set("Turning in");
             let after = web.turn_in(&course, &task)?;
             if after.state != State::TurnedIn {
                 bail!(
@@ -185,6 +185,7 @@ pub fn submit(ctx: &Ctx, args: SubmitArgs) -> Result<()> {
         }
         Ok(())
     })();
+    drop(spinner);
     meta.last_submission = Some(record.clone());
     workspace::save(&root, &meta)?;
     result?;
@@ -204,7 +205,9 @@ pub fn unsubmit(ctx: &Ctx, path: Option<PathBuf>, yes: bool) -> Result<()> {
     let root = task_root(path)?;
     let meta = workspace::load(&root)?;
     let web = ctx.web_for(Some(&meta.account))?;
-    let sub = web.submission(&meta.course_id, &meta.course_work_id)?;
+    let sub = spin("Checking assignment", || {
+        web.submission(&meta.course_id, &meta.course_work_id)
+    })?;
     if !sub.state.is_done() {
         println!(
             "Assignment '{}' is not turned in (status: {}).",
@@ -216,7 +219,9 @@ pub fn unsubmit(ctx: &Ctx, path: Option<PathBuf>, yes: bool) -> Result<()> {
     if !yes && !confirm(&format!("Unsubmit '{}'?", meta.title), false)? {
         return Ok(());
     }
-    let after = web.reclaim(&meta.course_id, &meta.course_work_id)?;
+    let after = spin("Unsubmitting", || {
+        web.reclaim(&meta.course_id, &meta.course_work_id)
+    })?;
     println!(
         "{} Status: {}",
         style("✓").green().bold(),
@@ -229,8 +234,12 @@ pub fn status(ctx: &Ctx, path: Option<PathBuf>) -> Result<()> {
     let root = task_root(path)?;
     let meta = workspace::load(&root)?;
     let web = ctx.web_for(Some(&meta.account))?;
-    let task = web.task(&meta.course_id, &meta.course_work_id)?;
-    let sub = web.submission(&meta.course_id, &meta.course_work_id).ok();
+    let (task, sub) = spin("Fetching assignment", || -> Result<_> {
+        Ok((
+            web.task(&meta.course_id, &meta.course_work_id)?,
+            web.submission(&meta.course_id, &meta.course_work_id).ok(),
+        ))
+    })?;
 
     println!("{}", style(&meta.title).bold());
     println!("  Course:     {}", meta.course_name);

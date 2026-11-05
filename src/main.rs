@@ -2,6 +2,7 @@ mod browser;
 mod classroom;
 mod commands;
 mod config;
+mod progress;
 mod session;
 mod task_md;
 mod util;
@@ -10,7 +11,7 @@ mod workspace;
 
 use anyhow::{Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
-use commands::{account, dev, get, submit, tasks};
+use commands::{account, dev, done, get, submit, tasks};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -101,6 +102,29 @@ enum Cmd {
         yes: bool,
         #[arg(long, help = "Only attach the file, do not turn in")]
         no_turn_in: bool,
+    },
+
+    #[command(
+        about = "Mark assignments as done without attachments (one, or all older than N days)"
+    )]
+    Done {
+        #[arg(
+            help = "Number from `class list`, assignment link or <courseId>/<taskId>; without it: all old pending assignments"
+        )]
+        task: Option<String>,
+        #[arg(
+            long,
+            value_name = "DAYS",
+            default_value_t = 30,
+            help = "Only assignments due (or posted, if undated) more than DAYS ago"
+        )]
+        older_than: u32,
+        #[arg(short, long, help = "Filter by course name (substring)")]
+        course: Option<String>,
+        #[arg(short = 'n', long, help = "Only show what would be marked")]
+        dry_run: bool,
+        #[arg(short, long, help = "Do not ask for confirmation")]
+        yes: bool,
     },
 
     #[command(about = "Unsubmit the assignment from the current folder")]
@@ -203,7 +227,9 @@ impl Ctx {
     }
 
     pub fn web_for(&self, preferred: Option<&str>) -> Result<web::Web> {
-        web::Web::connect(self.session(preferred)?)
+        let session = self.session(preferred)?;
+        let spinner = progress::Spinner::new("Connecting to Classroom");
+        web::Web::connect(session, &|msg| spinner.set(msg.to_string()))
     }
 }
 
@@ -267,6 +293,22 @@ fn run() -> Result<()> {
             },
         ),
         Cmd::Link { task, path, force } => get::link(&ctx, task.as_deref(), path, force),
+        Cmd::Done {
+            task,
+            older_than,
+            course,
+            dry_run,
+            yes,
+        } => done::run(
+            &ctx,
+            done::DoneArgs {
+                task,
+                older_than,
+                course,
+                dry_run,
+                yes,
+            },
+        ),
         Cmd::Unsubmit { path, yes } => submit::unsubmit(&ctx, path, yes),
         Cmd::Status { path } => submit::status(&ctx, path),
         Cmd::Open { task } => tasks::open(&ctx, task.as_deref()),
