@@ -286,6 +286,10 @@ impl Web {
         bail!("No usable Google Drive API key found on the Classroom page")
     }
 
+    pub fn check_drive(&self) -> Result<()> {
+        self.drive_key().map(|_| ())
+    }
+
     pub fn drive_meta(&self, id: &str) -> Result<Value> {
         let rb = self.http.get(format!("{DRIVE_API}/{id}")).query(&[
             ("key", self.drive_key()?),

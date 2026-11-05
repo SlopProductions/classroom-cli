@@ -92,29 +92,42 @@ pub fn fetch_tasks(web: &Web, opts: &ListOpts) -> Result<Vec<TaskRow>> {
 }
 
 #[derive(Serialize, Deserialize)]
-struct ListCache {
-    account: String,
-    tasks: Vec<CachedTask>,
+pub struct ListCache {
+    pub account: String,
+    #[serde(default)]
+    pub fetched_at: Option<String>,
+    pub tasks: Vec<CachedTask>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct CachedTask {
-    course_id: String,
-    course_work_id: String,
+pub struct CachedTask {
+    pub course_id: String,
+    pub course_work_id: String,
+    #[serde(default)]
+    pub due: Option<String>,
+    #[serde(default)]
+    pub done: bool,
 }
 
 fn cache_path() -> std::path::PathBuf {
     config::cache_dir().join("last_list.json")
 }
 
-fn save_cache(account: &str, rows: &[TaskRow]) {
+pub fn load_cache() -> Option<ListCache> {
+    serde_json::from_slice(&std::fs::read(cache_path()).ok()?).ok()
+}
+
+pub fn save_cache(account: &str, rows: &[TaskRow]) {
     let cache = ListCache {
         account: account.into(),
+        fetched_at: Some(Local::now().to_rfc3339()),
         tasks: rows
             .iter()
             .map(|r| CachedTask {
                 course_id: r.course.id.clone(),
                 course_work_id: r.task.id.clone(),
+                due: r.task.due.map(|d| d.to_rfc3339()),
+                done: r.task.done,
             })
             .collect(),
     };
@@ -270,4 +283,29 @@ pub fn open(ctx: &Ctx, task: Option<&str>) -> Result<()> {
     println!("{link}");
     open::that_detached(&link)?;
     Ok(())
+}
+
+pub fn per_course<T: Send>(
+    courses: &[Course],
+    f: impl Fn(&Course) -> Result<T> + Sync,
+) -> Vec<(Course, Result<T>)> {
+    std::thread::scope(|s| {
+        let handles: Vec<_> = courses.iter().map(|c| (c, s.spawn(|| f(c)))).collect();
+        handles
+            .into_iter()
+            .map(|(c, h)| (c.clone(), h.join().expect("worker thread panicked")))
+            .collect()
+    })
+}
+
+pub fn filter_courses(courses: Vec<Course>, filter: Option<&str>) -> Vec<Course> {
+    let filter = filter.map(|f| deunicode::deunicode(f).to_lowercase());
+    courses
+        .into_iter()
+        .filter(|c| {
+            filter
+                .as_ref()
+                .is_none_or(|f| deunicode::deunicode(&c.name).to_lowercase().contains(f))
+        })
+        .collect()
 }

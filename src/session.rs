@@ -343,32 +343,107 @@ fn headless_visit(binary: &Path, profile: &Path, url: &str) -> Result<Option<Vec
     res
 }
 
-pub fn login(
-    preferred_browser: Option<&str>,
+enum Source {
+    Import(&'static browser::Kind, PathBuf),
+    Window(PathBuf),
+}
+
+fn choose_source(
+    cfg_browser: Option<&str>,
     from: Option<&str>,
+    browser_arg: Option<&str>,
+) -> Result<Source> {
+    if let Some(name) = from {
+        let kind = browser::kind(name)?;
+        let binary = match browser_arg {
+            Some(b) => browser::resolve(Some(b))?,
+            None => kind.binary()?,
+        };
+        return Ok(Source::Import(kind, binary));
+    }
+    if let Some(b) = browser_arg {
+        return Ok(Source::Window(browser::resolve(Some(b))?));
+    }
+    if cfg_browser.is_some()
+        || std::env::var_os("CLASS_CHROME").is_some()
+        || !console::Term::stderr().is_term()
+    {
+        return Ok(Source::Window(browser::resolve(cfg_browser)?));
+    }
+    let installed = browser::installed();
+    if installed.is_empty() {
+        bail!(
+            "No Chromium-based browser found ({}). Install one or pass --browser <path>",
+            browser::names()
+        );
+    }
+    let mut options: Vec<(String, Source)> = vec![];
+    for (kind, bin) in &installed {
+        if kind.has_profile() {
+            options.push((
+                format!("Use my {} session", kind.label),
+                Source::Import(kind, bin.clone()),
+            ));
+        }
+    }
+    for (kind, bin) in &installed {
+        options.push((
+            format!("Log in in a new {} window", kind.label),
+            Source::Window(bin.clone()),
+        ));
+    }
+    let labels: Vec<&str> = options.iter().map(|(l, _)| l.as_str()).collect();
+    let idx = dialoguer::Select::new()
+        .with_prompt("How do you want to log in?")
+        .items(&labels)
+        .default(0)
+        .interact()?;
+    Ok(options.swap_remove(idx).1)
+}
+
+fn import_or_window(kind: &browser::Kind, binary: &Path, tmp: &Path) -> Result<Vec<Cookie>> {
+    if !kind.has_profile() {
+        eprintln!(
+            "No {} profile found in {}, opening a login window instead",
+            kind.label,
+            kind.user_data_dir().display()
+        );
+        return interactive_login(binary, tmp);
+    }
+    import_profile(kind, tmp)?;
+    let found = spin(
+        format!("Importing Google session from {}", kind.label),
+        || headless_check(binary, tmp),
+    )?;
+    match found {
+        Some(c) => Ok(c),
+        None => {
+            eprintln!(
+                "No active Classroom session in {}, opening a login window instead",
+                kind.label
+            );
+            interactive_login(binary, tmp)
+        }
+    }
+}
+
+pub fn login(
+    cfg_browser: Option<&str>,
+    from: Option<&str>,
+    browser_arg: Option<&str>,
     wanted: Option<&str>,
 ) -> Result<Session> {
+    let source = choose_source(cfg_browser, from, browser_arg)?;
     let tmp = profiles_dir().join(format!("new-{}", rand::random::<u32>()));
     let result = (|| -> Result<(PathBuf, Vec<Cookie>)> {
-        let Some(name) = from else {
-            let binary = browser::resolve(preferred_browser)?;
-            return Ok((binary.clone(), interactive_login(&binary, &tmp)?));
-        };
-        let kind = browser::kind(name)?;
-        let binary = kind.binary()?;
-        import_profile(kind, &tmp)?;
-        let found = spin(
-            format!("Importing Google session from {}", kind.name),
-            || headless_check(&binary, &tmp),
-        )?;
-        match found {
-            Some(c) => Ok((binary, c)),
-            None => {
-                eprintln!(
-                    "No active Classroom session in {}, opening a login window.",
-                    kind.name
-                );
-                Ok((binary.clone(), interactive_login(&binary, &tmp)?))
+        match source {
+            Source::Import(kind, binary) => {
+                let cookies = import_or_window(kind, &binary, &tmp)?;
+                Ok((binary, cookies))
+            }
+            Source::Window(binary) => {
+                let cookies = interactive_login(&binary, &tmp)?;
+                Ok((binary, cookies))
             }
         }
     })();

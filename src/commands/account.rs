@@ -1,11 +1,18 @@
 use crate::Ctx;
+use crate::browser;
 use crate::config::Config;
 use crate::session;
 use anyhow::Result;
 use console::style;
 
-pub fn login(ctx: &mut Ctx, from: Option<&str>) -> Result<()> {
-    let email = session::login(ctx.cfg.browser.as_deref(), from, ctx.account.as_deref())?.email;
+pub fn login(ctx: &mut Ctx, from: Option<&str>, browser: Option<&str>) -> Result<()> {
+    let email = session::login(
+        ctx.cfg.browser.as_deref(),
+        from,
+        browser,
+        ctx.account.as_deref(),
+    )?
+    .email;
     if ctx.cfg.active_account.is_none() {
         ctx.cfg.active_account = Some(email.clone());
         ctx.cfg.save()?;
@@ -76,5 +83,33 @@ pub fn config_set(cfg: &mut Config, key: &str, value: &str) -> Result<()> {
     cfg.set(key, value)?;
     cfg.save()?;
     println!("{} {key} = {value}", style("✓").green());
+    Ok(())
+}
+
+pub fn browsers() -> Result<()> {
+    let mut t = comfy_table::Table::new();
+    t.load_preset(comfy_table::presets::NOTHING).set_header(
+        ["Name", "Browser", "Executable", "Profile"]
+            .map(|h| comfy_table::Cell::new(h).fg(comfy_table::Color::DarkGrey)),
+    );
+    for k in browser::KINDS {
+        let (path, color) = match k.binary() {
+            Ok(p) => (p.display().to_string(), comfy_table::Color::Reset),
+            Err(_) => ("not found".to_string(), comfy_table::Color::DarkGrey),
+        };
+        let profile = if k.has_profile() { "yes" } else { "-" };
+        t.add_row(vec![
+            comfy_table::Cell::new(k.name).fg(comfy_table::Color::Cyan),
+            comfy_table::Cell::new(k.label),
+            comfy_table::Cell::new(path).fg(color),
+            comfy_table::Cell::new(profile),
+        ]);
+    }
+    println!("{t}");
+    println!(
+        "{}",
+        style("Profile = existing browser data that `class auth login --from <name>` can import")
+            .dim()
+    );
     Ok(())
 }

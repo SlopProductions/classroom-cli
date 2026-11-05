@@ -10,6 +10,7 @@ const COURSEWORK: &str = r#"[[100,null,1,0],[[[1,1,1,1,1,null,null,[1,1,1,null,1
 const MATERIALS: &str = r#"[[null,null,1,0],[[0,[0]]],[[null,1,1,1,1,1,null,1,1,1,1,1,1,null,[[1,1,1,1,1],1,1,1,1,1,1],[[1,1,1,1,1],1,1,1,[1,1]],1,null,1,[[1,1,1,1,1],1,1],1,[[1,1,1,1,1],1]]]]"#;
 const SUB_MASK: &str = r#"[null,1,null,1,1,null,1,1,1,null,null,null,1,null,[1],null,null,null,1,1,1,null,null,null,[[1,1]],[[1,1]],[1,[[1,1,[],[null,1,1]],1,1,1]],null,null,null,null,1]"#;
 
+const STREAM_KINDS: &[i64] = &[2, 3, 5, 7];
 const TODO_FILTER: &[i64] = &[1, 2];
 const DONE_FILTER: &[i64] = &[3, 4, 8, 10, 5, 7, 9, 6, 11];
 
@@ -92,6 +93,35 @@ pub struct Submission {
     pub attachments: Vec<Material>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PostKind {
+    Assignment,
+    Announcement,
+    Question,
+    Material,
+}
+
+impl PostKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            PostKind::Assignment => "assignment",
+            PostKind::Announcement => "announcement",
+            PostKind::Question => "question",
+            PostKind::Material => "material",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Post {
+    pub id: String,
+    pub course_id: String,
+    pub kind: PostKind,
+    pub title: String,
+    pub text: Option<String>,
+    pub created: Option<DateTime<Local>>,
+}
+
 fn text(v: &Value) -> Option<String> {
     match v {
         Value::String(s) => Some(s.clone()),
@@ -169,6 +199,32 @@ fn parse_task(w: &Value, done: bool) -> Option<Task> {
     })
 }
 
+fn parse_post(w: &Value) -> Option<Post> {
+    let kind = match w[0].as_i64()? {
+        2 => PostKind::Assignment,
+        3 => PostKind::Announcement,
+        5 => PostKind::Question,
+        7 => PostKind::Material,
+        _ => return None,
+    };
+    let item = w
+        .as_array()?
+        .iter()
+        .skip(1)
+        .find(|slot| slot.is_array())
+        .map(|slot| &slot[0])?;
+    Some(Post {
+        id: text(&item[0][0])?,
+        course_id: text(&item[0][1][0])?,
+        kind,
+        title: text(&item[5]).unwrap_or_default(),
+        text: text(&item[27][0][6][1]).filter(|s| !s.trim().is_empty()),
+        created: item[1]
+            .as_i64()
+            .and_then(|ms| Local.timestamp_millis_opt(ms).single()),
+    })
+}
+
 impl Web {
     fn sub_ref(&self, course_id: &str, task_id: &str) -> Result<Value> {
         Ok(json!([
@@ -236,6 +292,47 @@ impl Web {
             .into_iter()
             .flatten()
             .filter_map(|m| parse_material(&m[0]))
+            .collect())
+    }
+
+    pub fn stream(&self, course_id: &str) -> Result<Vec<Post>> {
+        let mut args = template(COURSEWORK);
+        set(&mut args, "/2/0/1", json!([[num(course_id)?]]));
+        set(&mut args, "/2/0/2", json!(STREAM_KINDS));
+        set(&mut args, "/2/0/14", Value::Null);
+        let r = self.rpc("pONvgf", &args, "/")?;
+        Ok(r[2]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(parse_post)
+            .collect())
+    }
+
+    pub fn submissions(
+        &self,
+        course_id: &str,
+        task_ids: &[String],
+    ) -> Result<Vec<(String, Submission)>> {
+        if task_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let refs = task_ids
+            .iter()
+            .map(|t| self.sub_ref(course_id, t))
+            .collect::<Result<Vec<_>>>()?;
+        let args = json!([
+            [null, null, 2, 0],
+            template(SUB_MASK),
+            [null, null, refs],
+            1
+        ]);
+        let r = self.rpc("Zj93ge", &args, "/")?;
+        Ok(r[2]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|sub| Some((text(&sub[0][1][0])?, parse_submission(sub))))
             .collect())
     }
 

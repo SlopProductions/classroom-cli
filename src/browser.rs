@@ -12,8 +12,10 @@ use tungstenite::{Message, WebSocket};
 
 pub struct Kind {
     pub name: &'static str,
+    pub label: &'static str,
     linux_bins: &'static [&'static str],
-    mac_app: &'static str,
+    mac_apps: &'static [&'static str],
+    mac_bundle_id: &'static str,
     linux_data: &'static str,
     mac_data: &'static str,
 }
@@ -21,56 +23,90 @@ pub struct Kind {
 pub const KINDS: &[Kind] = &[
     Kind {
         name: "chrome",
+        label: "Google Chrome",
         linux_bins: &["google-chrome-stable", "google-chrome"],
-        mac_app: "Google Chrome.app/Contents/MacOS/Google Chrome",
+        mac_apps: &["Google Chrome.app"],
+        mac_bundle_id: "com.google.Chrome",
         linux_data: "google-chrome",
         mac_data: "Google/Chrome",
     },
     Kind {
-        name: "chromium",
-        linux_bins: &["chromium", "chromium-browser"],
-        mac_app: "Chromium.app/Contents/MacOS/Chromium",
-        linux_data: "chromium",
-        mac_data: "Chromium",
-    },
-    Kind {
         name: "helium",
+        label: "Helium",
         linux_bins: &["helium-browser", "helium"],
-        mac_app: "Helium.app/Contents/MacOS/Helium",
+        mac_apps: &["Helium.app"],
+        mac_bundle_id: "net.imput.helium",
         linux_data: "net.imput.helium",
         mac_data: "net.imput.helium",
     },
     Kind {
         name: "brave",
+        label: "Brave",
         linux_bins: &["brave", "brave-browser"],
-        mac_app: "Brave Browser.app/Contents/MacOS/Brave Browser",
+        mac_apps: &["Brave Browser.app"],
+        mac_bundle_id: "com.brave.Browser",
         linux_data: "BraveSoftware/Brave-Browser",
         mac_data: "BraveSoftware/Brave-Browser",
     },
     Kind {
+        name: "arc",
+        label: "Arc",
+        linux_bins: &[],
+        mac_apps: &["Arc.app"],
+        mac_bundle_id: "company.thebrowser.Browser",
+        linux_data: "",
+        mac_data: "Arc/User Data",
+    },
+    Kind {
         name: "edge",
+        label: "Microsoft Edge",
         linux_bins: &["microsoft-edge-stable", "microsoft-edge"],
-        mac_app: "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        mac_apps: &["Microsoft Edge.app"],
+        mac_bundle_id: "com.microsoft.edgemac",
         linux_data: "microsoft-edge",
         mac_data: "Microsoft Edge",
     },
     Kind {
-        name: "arc",
-        linux_bins: &[],
-        mac_app: "Arc.app/Contents/MacOS/Arc",
-        linux_data: "",
-        mac_data: "Arc/User Data",
+        name: "chromium",
+        label: "Chromium",
+        linux_bins: &["chromium", "chromium-browser"],
+        mac_apps: &["Chromium.app"],
+        mac_bundle_id: "org.chromium.Chromium",
+        linux_data: "chromium",
+        mac_data: "Chromium",
+    },
+    Kind {
+        name: "vivaldi",
+        label: "Vivaldi",
+        linux_bins: &["vivaldi-stable", "vivaldi"],
+        mac_apps: &["Vivaldi.app"],
+        mac_bundle_id: "com.vivaldi.Vivaldi",
+        linux_data: "vivaldi",
+        mac_data: "Vivaldi",
+    },
+    Kind {
+        name: "opera",
+        label: "Opera",
+        linux_bins: &["opera"],
+        mac_apps: &["Opera.app"],
+        mac_bundle_id: "com.operasoftware.Opera",
+        linux_data: "opera",
+        mac_data: "com.operasoftware.Opera",
     },
 ];
 
 const IS_MAC: bool = cfg!(target_os = "macos");
 
+pub fn names() -> String {
+    KINDS.iter().map(|k| k.name).collect::<Vec<_>>().join(", ")
+}
+
 pub fn kind(name: &str) -> Result<&'static Kind> {
     let n = name.to_lowercase();
-    KINDS.iter().find(|k| k.name == n).with_context(|| {
-        let names: Vec<_> = KINDS.iter().map(|k| k.name).collect();
-        format!("Unknown browser '{name}'. Available: {}", names.join(", "))
-    })
+    KINDS
+        .iter()
+        .find(|k| k.name == n)
+        .with_context(|| format!("Unknown browser '{name}'. Known: {}", names()))
 }
 
 fn which(name: &str) -> Option<PathBuf> {
@@ -88,21 +124,72 @@ fn mac_app_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+fn mac_executable(app: &Path) -> Option<PathBuf> {
+    let macos = app.join("Contents/MacOS");
+    let from_plist = Command::new("plutil")
+        .args(["-extract", "CFBundleExecutable", "raw", "-o", "-"])
+        .arg(app.join("Contents/Info.plist"))
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|exe| macos.join(exe))
+        .filter(|p| p.is_file());
+    if from_plist.is_some() {
+        return from_plist;
+    }
+    let by_name = app
+        .file_stem()
+        .map(|stem| macos.join(stem))
+        .filter(|p| p.is_file());
+    if by_name.is_some() {
+        return by_name;
+    }
+    fs::read_dir(&macos)
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .find(|p| p.is_file())
+}
+
+fn mac_find_app(kind: &Kind) -> Option<PathBuf> {
+    for dir in mac_app_dirs() {
+        for app in kind.mac_apps {
+            let path = dir.join(app);
+            if path.is_dir() {
+                return Some(path);
+            }
+        }
+    }
+    let out = Command::new("mdfind")
+        .arg(format!(
+            "kMDItemCFBundleIdentifier == '{}'",
+            kind.mac_bundle_id
+        ))
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(PathBuf::from)
+        .find(|p| p.extension().is_some_and(|e| e == "app") && p.is_dir())
+}
+
 impl Kind {
     pub fn binary(&self) -> Result<PathBuf> {
-        if IS_MAC
-            && !self.mac_app.is_empty()
-            && let Some(p) = mac_app_dirs()
-                .into_iter()
-                .map(|d| d.join(self.mac_app))
-                .find(|p| p.is_file())
-        {
-            return Ok(p);
+        if IS_MAC && let Some(exe) = mac_find_app(self).and_then(|app| mac_executable(&app)) {
+            return Ok(exe);
         }
         self.linux_bins
             .iter()
             .find_map(|b| which(b))
-            .with_context(|| format!("Browser {} not found", self.name))
+            .with_context(|| {
+                format!(
+                    "{} is not installed or was not found. Point to it with --browser <path>",
+                    self.label
+                )
+            })
     }
 
     pub fn user_data_dir(&self) -> PathBuf {
@@ -113,24 +200,55 @@ impl Kind {
         };
         dirs::config_dir().unwrap_or_default().join(rel)
     }
+
+    pub fn has_profile(&self) -> bool {
+        let rel = if IS_MAC {
+            self.mac_data
+        } else {
+            self.linux_data
+        };
+        !rel.is_empty() && self.user_data_dir().join("Local State").is_file()
+    }
+}
+
+pub fn installed() -> Vec<(&'static Kind, PathBuf)> {
+    KINDS
+        .iter()
+        .filter_map(|k| k.binary().ok().map(|b| (k, b)))
+        .collect()
+}
+
+pub fn executable(path: &Path) -> Result<PathBuf> {
+    if path.extension().is_some_and(|e| e == "app") {
+        return mac_executable(path)
+            .with_context(|| format!("No executable found inside {}", path.display()));
+    }
+    if path.is_file() {
+        return Ok(path.to_path_buf());
+    }
+    bail!("Browser not found at {}", path.display())
 }
 
 pub fn resolve(preferred: Option<&str>) -> Result<PathBuf> {
     if let Ok(p) = std::env::var("CLASS_CHROME") {
-        return Ok(p.into());
+        return executable(Path::new(&p));
     }
     if let Some(p) = preferred {
         if p.contains('/') {
-            return Ok(p.into());
+            return executable(Path::new(p));
         }
         return kind(p)?.binary();
     }
-    if let Some(p) = KINDS.iter().find_map(|k| k.binary().ok()) {
-        return Ok(p);
-    }
-    bail!(
-        "No Chromium-based browser found. Set one with: class config set browser <chrome|helium|brave|...>"
-    )
+    installed()
+        .into_iter()
+        .next()
+        .map(|(_, bin)| bin)
+        .with_context(|| {
+            format!(
+                "No Chromium-based browser found ({}). Install one or pass --browser <path>",
+                names()
+            )
+        })
 }
 
 pub struct Browser {

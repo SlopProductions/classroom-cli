@@ -11,7 +11,7 @@ mod workspace;
 
 use anyhow::{Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
-use commands::{account, dev, done, get, submit, tasks};
+use commands::{account, calendar, dev, doctor, done, feed, get, grades, submit, tasks};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -149,6 +149,58 @@ enum Cmd {
     #[command(about = "List courses")]
     Courses,
 
+    #[command(about = "Show your grades")]
+    Grades {
+        #[arg(short, long, help = "Filter by course name (substring)")]
+        course: Option<String>,
+        #[arg(short, long, help = "Only show the average score per course")]
+        summary: bool,
+    },
+
+    #[command(about = "Recent announcements, materials and assignments from all courses")]
+    Feed {
+        #[arg(short, long, help = "Filter by course name (substring)")]
+        course: Option<String>,
+        #[arg(short, long, default_value_t = 7, help = "How many days back to show")]
+        days: i64,
+        #[arg(
+            short,
+            long,
+            help = "Only show posts you have not seen with class feed yet"
+        )]
+        unread: bool,
+    },
+
+    #[command(about = "Export due dates of pending assignments as an iCalendar (.ics) file")]
+    Calendar {
+        #[arg(short, long, help = "Filter by course name (substring)")]
+        course: Option<String>,
+        #[arg(short, long, help = "Write to a file instead of stdout")]
+        output: Option<PathBuf>,
+    },
+
+    #[command(
+        about = "Print how many pending assignments are due soon or overdue (fast, for shell prompts)"
+    )]
+    Count {
+        #[arg(
+            short,
+            long,
+            help = "Fetch from Classroom instead of using the last list"
+        )]
+        refresh: bool,
+        #[arg(
+            short,
+            long,
+            default_value_t = 2,
+            help = "Count assignments due within this many days"
+        )]
+        days: i64,
+    },
+
+    #[command(about = "Check that the browser, session and Classroom connection work")]
+    Doctor,
+
     #[command(about = "Configuration (without arguments: show)")]
     Config {
         #[command(subcommand)]
@@ -169,10 +221,18 @@ enum AuthCmd {
         #[arg(
             long,
             value_name = "BROWSER",
-            help = "Import the session from a browser you are already logged in to: chrome, chromium, helium, brave, edge"
+            help = "Import the session from a browser you are already logged in to (see: class auth browsers)"
         )]
         from: Option<String>,
+        #[arg(
+            long,
+            value_name = "PATH|NAME",
+            help = "Browser to use: a name, an executable path or a macOS .app path"
+        )]
+        browser: Option<String>,
     },
+    #[command(about = "Show detected browsers and which ones have a profile to import")]
+    Browsers,
     #[command(visible_alias = "ls", about = "List logged in accounts (* = active)")]
     List,
     #[command(about = "Set the active account")]
@@ -249,7 +309,10 @@ fn run() -> Result<()> {
 
     match cli.cmd {
         Cmd::Auth(cmd) => match cmd {
-            AuthCmd::Login { from } => account::login(&mut ctx, from.as_deref()),
+            AuthCmd::Login { from, browser } => {
+                account::login(&mut ctx, from.as_deref(), browser.as_deref())
+            }
+            AuthCmd::Browsers => account::browsers(),
             AuthCmd::List => account::list(&ctx),
             AuthCmd::Use { account: a } => account::use_account(&mut ctx, &a),
             AuthCmd::Logout { account: a } => account::logout(&mut ctx, &a),
@@ -313,6 +376,15 @@ fn run() -> Result<()> {
         Cmd::Status { path } => submit::status(&ctx, path),
         Cmd::Open { task } => tasks::open(&ctx, task.as_deref()),
         Cmd::Courses => tasks::courses(&ctx),
+        Cmd::Grades { course, summary } => grades::run(&ctx, course.as_deref(), summary),
+        Cmd::Feed {
+            course,
+            days,
+            unread,
+        } => feed::run(&ctx, course.as_deref(), days, unread),
+        Cmd::Calendar { course, output } => calendar::calendar(&ctx, course.as_deref(), output),
+        Cmd::Count { refresh, days } => calendar::count(&ctx, refresh, days),
+        Cmd::Doctor => doctor::run(&ctx),
         Cmd::Config { cmd } => match cmd.unwrap_or(ConfigCmd::Show) {
             ConfigCmd::Show => account::config_show(&ctx.cfg),
             ConfigCmd::Set { key, value } => account::config_set(&mut ctx.cfg, &key, &value),

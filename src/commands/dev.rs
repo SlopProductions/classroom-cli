@@ -307,12 +307,7 @@ pub fn capture(ctx: &Ctx) -> Result<()> {
         style("●").red(),
         sess.email
     );
-    println!("In the browser window, do the following:");
-    println!("  1. Open the assignment list (To-do)");
-    println!("  2. Open an assignment with a teacher attachment and download the attachment");
-    println!("  3. 'Add or create' → 'File' → upload any file (e.g. a zip)");
-    println!("  4. Click 'Turn in'");
-    println!("  5. Optionally: 'Unsubmit'");
+    println!("Do the actions you want to record in the browser window.");
     println!(
         "\nThen come back here and press {} (or close the browser).",
         style("Enter").bold()

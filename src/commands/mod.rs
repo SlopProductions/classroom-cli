@@ -1,6 +1,10 @@
 pub mod account;
+pub mod calendar;
 pub mod dev;
+pub mod doctor;
 pub mod done;
+pub mod feed;
 pub mod get;
+pub mod grades;
 pub mod submit;
 pub mod tasks;
