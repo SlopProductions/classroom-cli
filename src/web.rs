@@ -180,6 +180,12 @@ fn parse_batch(text: &str, rpc: &str) -> Result<Value> {
 
 impl Web {
     pub fn connect(mut session: Session, status: &dyn Fn(&str)) -> Result<Self> {
+        // a session of its own is kept alive by refreshing it before its cookies go stale; a failed refresh is
+        // not fatal here, the bootstrap below decides
+        if !session.imported && session::stale(&session) {
+            status("Refreshing Google session");
+            let _ = session::refresh(&mut session);
+        }
         let http = build_client(&session)?;
         let boot = match bootstrap(&http, &session.email) {
             Ok(b) => Some(b),
@@ -192,12 +198,8 @@ impl Web {
                 status("Refreshing Google session");
                 session::refresh(&mut session)?;
                 let http = build_client(&session)?;
-                let b = bootstrap(&http, &session.email).map_err(|_| {
-                    anyhow!(
-                        "Session for {} expired. Log in again: class auth login",
-                        session.email
-                    )
-                })?;
+                let b = bootstrap(&http, &session.email)
+                    .map_err(|_| anyhow!("{}", session::expired_message(&session)))?;
                 (http, b)
             }
         };

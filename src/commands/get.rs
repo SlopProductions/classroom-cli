@@ -318,3 +318,44 @@ fn download_material(
         sha256: workspace::sha256_bytes(&bytes),
     }))
 }
+
+/// Download the Drive attachments of a stream post (material/announcement) whose title contains `title`.
+pub fn post(ctx: &Ctx, course: &str, title: &str, out: PathBuf) -> Result<()> {
+    let web = ctx.web()?;
+    let c = web
+        .courses()?
+        .into_iter()
+        .find(|c| c.name.to_lowercase().contains(&course.to_lowercase()))
+        .context("No such course")?;
+    let lower = title.to_lowercase();
+    let posts: Vec<_> = web
+        .stream(&c.id)?
+        .into_iter()
+        .filter(|p| p.title.to_lowercase().contains(&lower))
+        .collect();
+    let mut used = HashSet::new();
+    for p in &posts {
+        println!("{} [{}] {}", p.id, p.kind.label(), p.title);
+        if let Some(t) = &p.text {
+            println!("{t}");
+        }
+        let mats = match web.materials(&c.id, &p.id) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("  materials: {e:#}");
+                continue;
+            }
+        };
+        for m in mats {
+            println!("  - {} {:?} {}", m.title, m.kind, m.url.clone().unwrap_or_default());
+            if let MaterialKind::Drive { id, .. } = &m.kind {
+                match download_material(&web, id, &out, &mut used, &HashMap::new(), &|s| println!("{s}")) {
+                    Ok(Some(g)) => println!("    saved {}", out.join(g.path).display()),
+                    Ok(None) => println!("    (not downloadable)"),
+                    Err(e) => println!("    error: {e:#}"),
+                }
+            }
+        }
+    }
+    Ok(())
+}

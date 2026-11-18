@@ -50,6 +50,8 @@ enum Cmd {
         old: bool,
         #[arg(short, long, help = "Filter by course name (substring)")]
         course: Option<String>,
+        #[arg(long, help = "Print the assignments as JSON (for scripts)")]
+        json: bool,
     },
 
     #[command(about = "Download an assignment into a new folder (TASK.md + materials)")]
@@ -257,6 +259,8 @@ enum ConfigCmd {
 enum DevCmd {
     #[command(about = "Record Classroom network traffic from the logged in browser to a file")]
     Capture,
+    #[command(about = "Download attachments of stream posts matching a title")]
+    Post { course: String, title: String, #[arg(default_value = ".")] out: std::path::PathBuf },
 }
 
 pub struct Ctx {
@@ -317,13 +321,19 @@ fn run() -> Result<()> {
             AuthCmd::Use { account: a } => account::use_account(&mut ctx, &a),
             AuthCmd::Logout { account: a } => account::logout(&mut ctx, &a),
         },
-        Cmd::List { all, old, course } => tasks::list(
+        Cmd::List {
+            all,
+            old,
+            course,
+            json,
+        } => tasks::list(
             &ctx,
             tasks::ListOpts {
                 course: course.as_deref(),
                 done: all,
                 old,
             },
+            json,
         ),
         Cmd::Get {
             task,
@@ -394,6 +404,7 @@ fn run() -> Result<()> {
             }
         },
         Cmd::Dev(DevCmd::Capture) => dev::capture(&ctx),
+        Cmd::Dev(DevCmd::Post { course, title, out }) => get::post(&ctx, &course, &title, out),
         Cmd::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "class", &mut std::io::stdout());
             Ok(())

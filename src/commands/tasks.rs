@@ -195,10 +195,31 @@ pub fn pick(web: &Web) -> Result<(String, String)> {
     Ok((rows[idx].course.id.clone(), rows[idx].task.id.clone()))
 }
 
-pub fn list(ctx: &Ctx, opts: ListOpts) -> Result<()> {
+pub fn list(ctx: &Ctx, opts: ListOpts, json: bool) -> Result<()> {
     let web = ctx.web()?;
     let rows = fetch_tasks(&web, &opts)?;
     save_cache(&web.email, &rows);
+    if json {
+        let out: Vec<serde_json::Value> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                serde_json::json!({
+                    "number": i + 1,
+                    "course": r.course.name,
+                    "course_id": r.course.id,
+                    "id": r.task.id,
+                    "title": r.task.title,
+                    "due": r.task.due.map(|d| d.to_rfc3339()),
+                    "created": r.task.created.map(|d| d.to_rfc3339()),
+                    "done": r.task.done,
+                    "link": r.task.link(),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
     if rows.is_empty() {
         println!("No assignments to do 🎉");
         return Ok(());

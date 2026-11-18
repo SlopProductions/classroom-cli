@@ -37,6 +37,10 @@ pub struct Session {
     pub saved_at: String,
     #[serde(default)]
     pub browser: Option<String>,
+    /// Copied from a browser profile (`class auth login --from`). Such a session shares its Google session with that
+    /// browser, and Google retires the copy once the browser rotates the session cookies (often within an hour).
+    #[serde(default)]
+    pub imported: bool,
 }
 
 impl Session {
@@ -171,6 +175,9 @@ fn has_cookie(cookies: &[Cookie], name: &str) -> bool {
 
 fn wait_for_login(cdp: &mut Cdp, timeout: Option<Duration>) -> Result<Option<Vec<Cookie>>> {
     let start = Instant::now();
+    // Google's sign-in redirects can leave a moment with no page target: only three empty checks in a row mean
+    // the window was closed
+    let mut empty = 0;
     loop {
         sleep(Duration::from_secs(1));
         if timeout.is_some_and(|t| start.elapsed() > t) {
@@ -184,8 +191,13 @@ fn wait_for_login(cdp: &mut Cdp, timeout: Option<Duration>) -> Result<Option<Vec
             .filter(|t| t["type"] == "page")
             .collect();
         if pages.is_empty() {
-            bail!("Browser window was closed before logging in");
+            empty += 1;
+            if empty >= 3 {
+                bail!("Browser window was closed before logging in");
+            }
+            continue;
         }
+        empty = 0;
         let on_classroom = pages.iter().any(|t| {
             t["url"]
                 .as_str()
@@ -283,11 +295,29 @@ fn import_profile(kind: &browser::Kind, dest: &Path) -> Result<()> {
     if !local_state.is_file() {
         bail!("No {} profile found in {}", kind.name, src.display());
     }
-    let profile = fs::read(&local_state)
+    let state = fs::read(&local_state)
         .ok()
-        .and_then(|d| serde_json::from_slice::<Value>(&d).ok())
-        .and_then(|v| v["profile"]["last_used"].as_str().map(String::from))
-        .unwrap_or_else(|| "Default".into());
+        .and_then(|d| serde_json::from_slice::<Value>(&d).ok());
+    // CLASS_BROWSER_PROFILE picks a profile by directory ("Profile 1") or display name ("School").
+    let wanted = std::env::var("CLASS_BROWSER_PROFILE").ok().filter(|s| !s.is_empty());
+    let profile = match (&wanted, &state) {
+        (Some(w), Some(v)) => v["profile"]["info_cache"]
+            .as_object()
+            .and_then(|m| {
+                m.iter()
+                    .find(|(dir, info)| {
+                        dir.eq_ignore_ascii_case(w)
+                            || info["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(w))
+                    })
+                    .map(|(dir, _)| dir.clone())
+            })
+            .ok_or_else(|| anyhow::anyhow!("No {} profile named {w}", kind.name))?,
+        (Some(w), None) => w.clone(),
+        _ => state
+            .as_ref()
+            .and_then(|v| v["profile"]["last_used"].as_str().map(String::from))
+            .unwrap_or_else(|| "Default".into()),
+    };
     fs::create_dir_all(dest.join("Default"))?;
     fs::copy(&local_state, dest.join("Local State"))?;
     let mut copied = false;
@@ -341,6 +371,11 @@ fn headless_visit(binary: &Path, profile: &Path, url: &str) -> Result<Option<Vec
     let res = wait_for_login(&mut b.cdp, Some(Duration::from_secs(20)));
     b.close();
     res
+}
+
+enum SourceKind {
+    Import,
+    Window,
 }
 
 enum Source {
@@ -434,6 +469,16 @@ pub fn login(
     wanted: Option<&str>,
 ) -> Result<Session> {
     let source = choose_source(cfg_browser, from, browser_arg)?;
+    let source_kind = match source {
+        Source::Import(..) => SourceKind::Import,
+        Source::Window(..) => SourceKind::Window,
+    };
+    if matches!(source_kind, SourceKind::Import) {
+        eprintln!(
+            "Note: a session copied from a browser lasts only until that browser rotates its Google cookies (often \
+             an hour). For a session that stays logged in, use a login of its own: class auth login --browser <name>"
+        );
+    }
     let tmp = profiles_dir().join(format!("new-{}", rand::random::<u32>()));
     let result = (|| -> Result<(PathBuf, Vec<Cookie>)> {
         match source {
@@ -447,6 +492,7 @@ pub fn login(
             }
         }
     })();
+    let imported = matches!(source_kind, SourceKind::Import);
     let (binary, cookies) = match result {
         Ok(r) => r,
         Err(e) => {
@@ -460,6 +506,7 @@ pub fn login(
         cookies,
         saved_at: chrono::Local::now().to_rfc3339(),
         browser: Some(binary.to_string_lossy().into_owned()),
+        imported,
     };
     session.email = match choose_email(&session, wanted) {
         Ok(e) => e,
@@ -493,9 +540,29 @@ pub fn refresh(s: &mut Session) -> Result<()> {
             s.saved_at = chrono::Local::now().to_rfc3339();
             save(s)
         }
-        None => bail!(
-            "Session for {} expired. Log in again: class auth login",
+        None => bail!("{}", expired_message(s)),
+    }
+}
+
+/// How old the saved cookies may get before a command refreshes them first (a headless visit in the session's own
+/// browser profile, which lets Google rotate the cookies the way an open browser does).
+pub const REFRESH_AFTER_HOURS: i64 = 2;
+
+pub fn stale(s: &Session) -> bool {
+    chrono::DateTime::parse_from_rfc3339(&s.saved_at)
+        .map(|t| chrono::Local::now().signed_duration_since(t).num_hours() >= REFRESH_AFTER_HOURS)
+        .unwrap_or(true)
+}
+
+pub fn expired_message(s: &Session) -> String {
+    if s.imported {
+        format!(
+            "Session for {} expired: it was copied from a browser, and Google retires such a copy once the browser \
+             rotates its cookies. Log in once with a session of its own (it then stays logged in): \
+             class auth login --browser <name>",
             s.email
-        ),
+        )
+    } else {
+        format!("Session for {} expired. Log in again: class auth login", s.email)
     }
 }
